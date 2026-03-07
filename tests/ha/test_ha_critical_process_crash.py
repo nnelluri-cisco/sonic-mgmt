@@ -12,14 +12,20 @@ For each process crash case there are 4 variations:
 
 Expected Control Plane : HA state converges eventually.
 Expected Data Plane    : T2 receives packets with allowed disruption.
+
+Traffic uses PrivateLink (PL) DASH config as defined in PR #22161.
 """
 
+import json
 import logging
-import pytest
 import time
 
+import pytest
+
 from tests.common.utilities import wait_until
+from tests.common.ha.smartswitch_ha_gnmi_utils import apply_messages
 from tests.ha.ha_utils import wait_for_ha_state
+from tests.ha.configs.privatelink_config import PL_CONFIG_TABLES
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +40,7 @@ pytestmark = [
 PROCESS_RECOVERY_TIMEOUT = 120  # seconds to wait for process to recover
 HA_CONVERGENCE_TIMEOUT = 180    # seconds to wait for HA state to converge
 HA_CHECK_INTERVAL = 5           # polling interval in seconds
-TRAFFIC_DISRUPTION_SECS = 30   # allowed disruption window in seconds
+TRAFFIC_DISRUPTION_SECS = 30    # allowed disruption window in seconds
 
 ACTIVE_SCOPE_KEY = "vdpu0_0:haset0_0"
 STANDBY_SCOPE_KEY = "vdpu1_0:haset0_0"
@@ -106,25 +112,6 @@ def verify_ha_state_converged(duthost, scope_key, expected_state):
     logger.info(f"{duthost.hostname}: HA scope '{scope_key}' reached '{expected_state}'")
 
 
-def run_traffic_and_verify(ha_io, active_dut_index, disruption_secs=TRAFFIC_DISRUPTION_SECS):
-    """
-    Start traffic, wait for the disruption window, then verify T2 received packets.
-
-    Args:
-        ha_io            : SmartSwitchHaTrafficTest instance
-        active_dut_index : Index of the DUT that is currently active (0 or 1)
-        disruption_secs  : Allowed disruption window in seconds
-    """
-    logger.info("Starting traffic")
-    ha_io.start_io_test()
-    time.sleep(disruption_secs)
-
-    logger.info("Stopping traffic and verifying")
-    result = ha_io.stop_io_test()
-    assert result, "Traffic verification failed: T2 did not receive expected packets"
-    logger.info("Traffic verification passed with allowed disruption")
-
-
 ###############################################################################
 # Fixtures
 ###############################################################################
@@ -142,6 +129,60 @@ def standby_dut(duthosts):
     return duthosts[1]
 
 
+@pytest.fixture(scope="module")
+def setup_pl_config(duthosts, ptfhost, localhost, setup_ha_config):
+    """
+    Push PrivateLink DASH tables to DPU0 on both DUTs via gnmi.
+
+    Uses PL_CONFIG_TABLES from tests/ha/configs/privatelink_config.py,
+    following the pattern established in PR #22161.
+
+    Yields after config is applied; cleans up on teardown.
+    """
+    pl_config = {}
+    for table in PL_CONFIG_TABLES:
+        pl_config.update(table)
+
+    tmp_file = "/tmp/ha_pl_config.json"
+
+    for switch_id, duthost in enumerate(duthosts):
+        logger.info(f"Pushing PL config to {duthost.hostname} DPU0")
+        duthost.copy(
+            content=json.dumps(pl_config, indent=4),
+            dest=tmp_file
+        )
+        apply_messages(
+            localhost=localhost,
+            duthost=duthost,
+            ptfhost=ptfhost,
+            messages=pl_config,
+            dpu_index=0,
+            setup_ha_config=setup_ha_config,
+            gnmi_key="DASH_APPLIANCE_TABLE",
+            filename=tmp_file,
+            set_db=True,
+            wait_after_apply=5,
+        )
+        logger.info(f"PL config applied on {duthost.hostname}")
+
+    yield
+
+    # Teardown: remove PL config from both DUTs
+    for duthost in duthosts:
+        logger.info(f"Removing PL config from {duthost.hostname} DPU0")
+        apply_messages(
+            localhost=localhost,
+            duthost=duthost,
+            ptfhost=ptfhost,
+            messages=pl_config,
+            dpu_index=0,
+            setup_ha_config=setup_ha_config,
+            gnmi_key="DASH_APPLIANCE_TABLE",
+            filename=tmp_file,
+            set_db=False,
+        )
+
+
 ###############################################################################
 # Test Class — syncd crash
 ###############################################################################
@@ -150,6 +191,9 @@ def standby_dut(duthosts):
 class TestSyncdCrash:
     """
     Verify HA behavior when syncd crashes on a DPU.
+
+    PL traffic (VM -> PE via PrivateLink routing) is used for data-plane
+    verification, following PR #22161.
 
     4 variations:
         test_syncd_crash_active_dpu_traffic_on_active   (variation 1)
@@ -173,7 +217,7 @@ class TestSyncdCrash:
         Common test body for syncd crash scenarios.
 
         Steps:
-            1. Start sending traffic
+            1. Start sending PL traffic
             2. Kill syncd on target DPU
             3. Verify HA state converges on crash DUT
             4. Verify HA state unchanged on peer DUT
@@ -185,8 +229,8 @@ class TestSyncdCrash:
             f"DPU{crash_dpu_index} (scope: {crash_scope_key}) ==="
         )
 
-        # Step 1: Start traffic
-        logger.info("Step 1: Start sending traffic")
+        # Step 1: Start PL traffic
+        logger.info("Step 1: Start sending PL traffic")
         ha_io.start_io_test()
 
         # Step 2: Kill syncd
@@ -206,14 +250,14 @@ class TestSyncdCrash:
         )
 
         # Step 5: Stop traffic and verify T2 received packets
-        logger.info("Step 5: Stop traffic and verify T2 received packets")
+        logger.info("Step 5: Stop PL traffic and verify T2 received packets")
         time.sleep(TRAFFIC_DISRUPTION_SECS)
         result = ha_io.stop_io_test()
         assert result, (
-            "Traffic verification failed: T2 did not receive expected packets "
+            "Traffic verification failed: T2 did not receive expected PL packets "
             "within the allowed disruption window"
         )
-        logger.info("Traffic verification passed with allowed disruption")
+        logger.info("PL traffic verification passed with allowed disruption")
 
         # Step 6: Wait for syncd to recover
         logger.info("Step 6: Wait for syncd recovery")
@@ -229,10 +273,10 @@ class TestSyncdCrash:
     # ------------------------------------------------------------------
     def test_syncd_crash_active_dpu_traffic_on_active(
         self,
-        duthosts,
         active_dut,
         standby_dut,
         setup_ha_config,
+        setup_pl_config,
         setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
     ):
@@ -241,7 +285,7 @@ class TestSyncdCrash:
 
         Expected:
             Control Plane : HA state converges eventually.
-            Data Plane    : T2 receives packets with allowed disruption.
+            Data Plane    : T2 receives PL packets with allowed disruption.
         """
         self._run_syncd_crash(
             crash_duthost=active_dut,
@@ -259,10 +303,10 @@ class TestSyncdCrash:
     # ------------------------------------------------------------------
     def test_syncd_crash_active_dpu_traffic_on_standby(
         self,
-        duthosts,
         active_dut,
         standby_dut,
         setup_ha_config,
+        setup_pl_config,
         setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
     ):
@@ -271,7 +315,7 @@ class TestSyncdCrash:
 
         Expected:
             Control Plane : HA state converges eventually.
-            Data Plane    : T2 receives packets with allowed disruption.
+            Data Plane    : T2 receives PL packets with allowed disruption.
         """
         self._run_syncd_crash(
             crash_duthost=active_dut,
@@ -289,10 +333,10 @@ class TestSyncdCrash:
     # ------------------------------------------------------------------
     def test_syncd_crash_standby_dpu_traffic_on_active(
         self,
-        duthosts,
         active_dut,
         standby_dut,
         setup_ha_config,
+        setup_pl_config,
         setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
     ):
@@ -301,7 +345,7 @@ class TestSyncdCrash:
 
         Expected:
             Control Plane : HA state remains unchanged.
-            Data Plane    : T2 receives packets with allowed disruption.
+            Data Plane    : T2 receives PL packets with allowed disruption.
         """
         self._run_syncd_crash(
             crash_duthost=standby_dut,
@@ -319,10 +363,10 @@ class TestSyncdCrash:
     # ------------------------------------------------------------------
     def test_syncd_crash_standby_dpu_traffic_on_standby(
         self,
-        duthosts,
         active_dut,
         standby_dut,
         setup_ha_config,
+        setup_pl_config,
         setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
     ):
@@ -331,7 +375,7 @@ class TestSyncdCrash:
 
         Expected:
             Control Plane : HA state remains unchanged.
-            Data Plane    : T2 receives packets with allowed disruption.
+            Data Plane    : T2 receives PL packets with allowed disruption.
         """
         self._run_syncd_crash(
             crash_duthost=standby_dut,
