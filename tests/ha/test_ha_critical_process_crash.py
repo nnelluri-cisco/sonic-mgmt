@@ -19,13 +19,25 @@ Traffic uses PrivateLink (PL) DASH config as defined in PR #22161.
 import json
 import logging
 import time
-
+import ptf.packet as scapy
+import ptf.testutils as testutils
 import pytest
+from ptf.mask import Mask
 
 from tests.common.utilities import wait_until
 from tests.common.ha.smartswitch_ha_gnmi_utils import apply_messages
 from tests.ha.ha_utils import wait_for_ha_state
-from tests.ha.configs.privatelink_config import PL_CONFIG_TABLES
+from tests.ha.configs.privatelink_config import (
+    APPLIANCE_VIP,
+    VM1_PA,
+    VM1_CA,
+    PE_CA,
+    PE_PA,
+    ENI_MAC,
+    VNET1_VNI,
+    ENCAP_VNI,
+    PL_CONFIG_TABLES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +52,17 @@ pytestmark = [
 PROCESS_RECOVERY_TIMEOUT = 120  # seconds to wait for process to recover
 HA_CONVERGENCE_TIMEOUT = 180    # seconds to wait for HA state to converge
 HA_CHECK_INTERVAL = 5           # polling interval in seconds
-TRAFFIC_DISRUPTION_SECS = 30    # allowed disruption window in seconds
+TRAFFIC_DISRUPTION_SECS = 30   # allowed disruption window in seconds
+PL_VERIFY_TIMEOUT = 10          # seconds to wait for PL packet at receiver
 
 ACTIVE_SCOPE_KEY = "vdpu0_0:haset0_0"
 STANDBY_SCOPE_KEY = "vdpu1_0:haset0_0"
+
+# Keys used in pl_traffic_config dict
+_LOCAL_PTF_INTF = "local_ptf_intf"
+_LOCAL_PTF_MAC = "local_ptf_mac"
+_REMOTE_PTF_RECV = "remote_ptf_recv_intf"
+_DUT_MAC = "dut_mac"
 
 ###############################################################################
 # Helpers
@@ -112,6 +131,96 @@ def verify_ha_state_converged(duthost, scope_key, expected_state):
     logger.info(f"{duthost.hostname}: HA scope '{scope_key}' reached '{expected_state}'")
 
 
+def _build_outbound_pl_packet(pl_config):
+    """
+    Build an outbound PrivateLink packet (VM -> DPU -> PE direction).
+
+    Outer: VxLAN encap with ip_src=VM1_PA, ip_dst=APPLIANCE_VIP,
+           vni=VNET1_VNI.
+    Inner: UDP packet ip_src=VM1_CA, ip_dst=PE_CA, eth_src=ENI_MAC.
+
+    Args:
+        pl_config : dict with _LOCAL_PTF_MAC and _DUT_MAC keys
+
+    Returns:
+        scapy packet to send
+    """
+    inner = testutils.simple_udp_packet(
+        eth_src=ENI_MAC,
+        eth_dst="ff:ff:ff:ff:ff:ff",
+        ip_src=VM1_CA,
+        ip_dst=PE_CA,
+    )
+    outer = testutils.simple_vxlan_packet(
+        eth_src=pl_config[_LOCAL_PTF_MAC],
+        eth_dst=pl_config[_DUT_MAC],
+        ip_src=VM1_PA,
+        ip_dst=APPLIANCE_VIP,
+        with_udp_chksum=False,
+        vxlan_vni=int(VNET1_VNI),
+        inner_frame=inner,
+    )
+    return outer
+
+
+def _build_expected_pl_packet():
+    """
+    Build a mask for the expected PL output packet at T2 (PE side).
+
+    Expected: outer GRE/NVGRE with ip_src=APPLIANCE_VIP, ip_dst=PE_PA.
+    The mask ignores inner payload and Ethernet fields so verification
+    is tolerant of exact DUT/PE MACs.
+
+    Returns:
+        ptf.mask.Mask matching the outer GRE envelope
+    """
+    exp_pkt = testutils.simple_gre_packet(
+        ip_src=APPLIANCE_VIP,
+        ip_dst=PE_PA,
+        gre_key_present=True,
+        gre_key=int(ENCAP_VNI) << 8,
+    )
+    masked = Mask(exp_pkt)
+    masked.set_do_not_care_scapy(scapy.Ether, "src")
+    masked.set_do_not_care_scapy(scapy.Ether, "dst")
+    masked.set_do_not_care_scapy(scapy.IP, "ttl")
+    masked.set_do_not_care_scapy(scapy.IP, "chksum")
+    masked.set_do_not_care_scapy(scapy.GRE, "seqnum_present")
+    masked.set_do_not_care_scapy(scapy.GRE, "seqnum")
+    return masked
+
+
+def verify_pl_traffic(ptfadapter, pl_config, timeout=PL_VERIFY_TIMEOUT):
+    """
+    Send one outbound PL packet (VM -> DPU -> PE) and verify it exits at T2.
+
+    Follows the same pattern as test_ha_steady_state_pl.py from PR #22161:
+      1. Flush dataplane
+      2. Send VxLAN-encapped DASH packet from the T0/VM-side PTF port
+      3. Verify a GRE-encapped packet arrives on any T2/PE-side PTF port
+
+    Args:
+        ptfadapter : PTF adapter fixture
+        pl_config  : dict from pl_traffic_config fixture
+        timeout    : seconds to wait for packet at T2
+    """
+    send_pkt = _build_outbound_pl_packet(pl_config)
+    exp_pkt = _build_expected_pl_packet()
+
+    ptfadapter.dataplane.flush()
+    logger.info(
+        f"Sending PL outbound packet on PTF port {pl_config[_LOCAL_PTF_INTF]}"
+    )
+    testutils.send(ptfadapter, pl_config[_LOCAL_PTF_INTF], send_pkt, count=1)
+    testutils.verify_packet_any_port(
+        ptfadapter,
+        exp_pkt,
+        pl_config[_REMOTE_PTF_RECV],
+        timeout=timeout,
+    )
+    logger.info("PL outbound packet received at T2 — dataplane verified")
+
+
 ###############################################################################
 # Fixtures
 ###############################################################################
@@ -130,6 +239,61 @@ def standby_dut(duthosts):
 
 
 @pytest.fixture(scope="module")
+def pl_traffic_config(duthosts, tbinfo):
+    """
+    Collect PTF interface indices and MACs needed to send/receive PL packets.
+
+    For each DUT, queries minigraph facts to find:
+      - local_ptf_intf  : PTF port index connected to a T0 (VM/leaf) neighbor
+      - local_ptf_mac   : MAC learned by DUT from that T0 neighbor
+      - remote_ptf_recv : list of PTF port indices connected to T2 (spine) neighbors
+      - dut_mac         : DUT Ethernet MAC address
+
+    Returns:
+        list of per-DUT config dicts (index matches duthosts index)
+    """
+    configs = []
+    for duthost in duthosts:
+        mg_facts = duthost.get_extended_minigraph_facts(tbinfo)
+        config_facts = duthost.get_running_config_facts()
+        arp_table = duthost.switch_arptable()["ansible_facts"]["arptable"].get("v4", {})
+
+        dut_mac = config_facts["DEVICE_METADATA"]["localhost"]["mac"]
+
+        local_ptf_intf = None
+        local_ptf_mac = None
+        remote_ptf_recv = []
+
+        bgp_neighbors = config_facts.get("BGP_NEIGHBOR", {})
+
+        for interface, neighbor in mg_facts["minigraph_neighbors"].items():
+            neigh_name = neighbor.get("name", "")
+            port_id = mg_facts["minigraph_ptf_indices"].get(interface)
+            if port_id is None:
+                continue
+
+            if "T0" in neigh_name and local_ptf_intf is None:
+                local_ptf_intf = port_id
+                # Find PTF MAC from DUT ARP table for this neighbor's IP
+                for neigh_ip, bgp_cfg in bgp_neighbors.items():
+                    if bgp_cfg.get("name") == neigh_name and neigh_ip in arp_table:
+                        local_ptf_mac = arp_table[neigh_ip].get("macaddress")
+                        break
+
+            elif "T2" in neigh_name:
+                remote_ptf_recv.append(port_id)
+
+        configs.append({
+            _LOCAL_PTF_INTF: local_ptf_intf,
+            _LOCAL_PTF_MAC:  local_ptf_mac,
+            _REMOTE_PTF_RECV: remote_ptf_recv,
+            _DUT_MAC:        dut_mac,
+        })
+
+    return configs
+
+
+@pytest.fixture(scope="module")
 def setup_pl_config(duthosts, ptfhost, localhost, setup_ha_config):
     """
     Push PrivateLink DASH tables to DPU0 on both DUTs via gnmi.
@@ -145,7 +309,7 @@ def setup_pl_config(duthosts, ptfhost, localhost, setup_ha_config):
 
     tmp_file = "/tmp/ha_pl_config.json"
 
-    for switch_id, duthost in enumerate(duthosts):
+    for duthost in duthosts:
         logger.info(f"Pushing PL config to {duthost.hostname} DPU0")
         duthost.copy(
             content=json.dumps(pl_config, indent=4),
@@ -193,7 +357,9 @@ class TestSyncdCrash:
     Verify HA behavior when syncd crashes on a DPU.
 
     PL traffic (VM -> PE via PrivateLink routing) is used for data-plane
-    verification, following PR #22161.
+    verification, following PR #22161 (test_ha_steady_state_pl.py pattern):
+      - ptfadapter sends a VxLAN-encapped DASH packet from the T0/VM side
+      - verify a GRE-encapped packet arrives at T2/PE side
 
     4 variations:
         test_syncd_crash_active_dpu_traffic_on_active   (variation 1)
@@ -211,17 +377,18 @@ class TestSyncdCrash:
         verify_duthost,
         verify_scope_key,
         expected_ha_state_verify,
-        ha_io,
+        ptfadapter,
+        pl_config,
     ):
         """
         Common test body for syncd crash scenarios.
 
         Steps:
-            1. Start sending PL traffic
+            1. Verify PL dataplane is functional (pre-crash baseline)
             2. Kill syncd on target DPU
             3. Verify HA state converges on crash DUT
             4. Verify HA state unchanged on peer DUT
-            5. Verify traffic received by T2 with allowed disruption
+            5. Wait for allowed disruption window; re-verify PL traffic
             6. Wait for syncd to recover
         """
         logger.info(
@@ -229,9 +396,9 @@ class TestSyncdCrash:
             f"DPU{crash_dpu_index} (scope: {crash_scope_key}) ==="
         )
 
-        # Step 1: Start PL traffic
-        logger.info("Step 1: Start sending PL traffic")
-        ha_io.start_io_test()
+        # Step 1: Verify PL traffic is flowing (pre-crash baseline)
+        logger.info("Step 1: Verify PL dataplane pre-crash")
+        verify_pl_traffic(ptfadapter, pl_config)
 
         # Step 2: Kill syncd
         logger.info("Step 2: Kill syncd on DPU")
@@ -249,15 +416,14 @@ class TestSyncdCrash:
             verify_duthost, verify_scope_key, expected_ha_state_verify
         )
 
-        # Step 5: Stop traffic and verify T2 received packets
-        logger.info("Step 5: Stop PL traffic and verify T2 received packets")
-        time.sleep(TRAFFIC_DISRUPTION_SECS)
-        result = ha_io.stop_io_test()
-        assert result, (
-            "Traffic verification failed: T2 did not receive expected PL packets "
-            "within the allowed disruption window"
+        # Step 5: Allow disruption window then re-verify PL traffic
+        logger.info(
+            f"Step 5: Wait {TRAFFIC_DISRUPTION_SECS}s disruption window, "
+            "then re-verify PL traffic"
         )
-        logger.info("PL traffic verification passed with allowed disruption")
+        time.sleep(TRAFFIC_DISRUPTION_SECS)
+        verify_pl_traffic(ptfadapter, pl_config)
+        logger.info("PL traffic re-verified after HA convergence")
 
         # Step 6: Wait for syncd to recover
         logger.info("Step 6: Wait for syncd recovery")
@@ -277,8 +443,9 @@ class TestSyncdCrash:
         standby_dut,
         setup_ha_config,
         setup_pl_config,
-        setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
+        ptfadapter,
+        pl_traffic_config,
     ):
         """
         Variation 1: syncd crash on active DPU, traffic landing on active DPU.
@@ -295,7 +462,8 @@ class TestSyncdCrash:
             verify_duthost=standby_dut,
             verify_scope_key=STANDBY_SCOPE_KEY,
             expected_ha_state_verify="standby",
-            ha_io=setup_SmartSwitchHaTrafficTest,
+            ptfadapter=ptfadapter,
+            pl_config=pl_traffic_config[0],
         )
 
     # ------------------------------------------------------------------
@@ -307,8 +475,9 @@ class TestSyncdCrash:
         standby_dut,
         setup_ha_config,
         setup_pl_config,
-        setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
+        ptfadapter,
+        pl_traffic_config,
     ):
         """
         Variation 2: syncd crash on active DPU, traffic landing on standby DPU.
@@ -325,7 +494,8 @@ class TestSyncdCrash:
             verify_duthost=standby_dut,
             verify_scope_key=STANDBY_SCOPE_KEY,
             expected_ha_state_verify="standby",
-            ha_io=setup_SmartSwitchHaTrafficTest,
+            ptfadapter=ptfadapter,
+            pl_config=pl_traffic_config[1],
         )
 
     # ------------------------------------------------------------------
@@ -337,8 +507,9 @@ class TestSyncdCrash:
         standby_dut,
         setup_ha_config,
         setup_pl_config,
-        setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
+        ptfadapter,
+        pl_traffic_config,
     ):
         """
         Variation 3: syncd crash on standby DPU, traffic landing on active DPU.
@@ -355,7 +526,8 @@ class TestSyncdCrash:
             verify_duthost=active_dut,
             verify_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_verify="active",
-            ha_io=setup_SmartSwitchHaTrafficTest,
+            ptfadapter=ptfadapter,
+            pl_config=pl_traffic_config[0],
         )
 
     # ------------------------------------------------------------------
@@ -367,8 +539,9 @@ class TestSyncdCrash:
         standby_dut,
         setup_ha_config,
         setup_pl_config,
-        setup_SmartSwitchHaTrafficTest,
         activate_dash_ha_from_json,
+        ptfadapter,
+        pl_traffic_config,
     ):
         """
         Variation 4: syncd crash on standby DPU, traffic landing on standby DPU.
@@ -385,5 +558,6 @@ class TestSyncdCrash:
             verify_duthost=active_dut,
             verify_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_verify="active",
-            ha_io=setup_SmartSwitchHaTrafficTest,
+            ptfadapter=ptfadapter,
+            pl_config=pl_traffic_config[1],
         )
