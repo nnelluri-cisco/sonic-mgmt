@@ -16,7 +16,6 @@ Expected Data Plane    : T2 receives packets with allowed disruption.
 Traffic uses PrivateLink (PL) DASH config as defined in PR #22161.
 """
 
-import json
 import logging
 import time
 import ptf.packet as scapy
@@ -25,7 +24,8 @@ import pytest
 from ptf.mask import Mask
 
 from tests.common.utilities import wait_until
-from tests.common.ha.smartswitch_ha_gnmi_utils import apply_messages
+from tests.common.config_reload import config_reload
+from gnmi_utils import apply_messages
 from tests.ha.ha_utils import wait_for_ha_state
 from tests.ha.configs.privatelink_config import (
     APPLIANCE_VIP,
@@ -36,7 +36,20 @@ from tests.ha.configs.privatelink_config import (
     ENI_MAC,
     VNET1_VNI,
     ENCAP_VNI,
-    PL_CONFIG_TABLES,
+    APPLIANCE_CONFIG,
+    ROUTING_TYPE_PL_CONFIG,
+    ROUTING_TYPE_VNET_CONFIG,
+    VNET_CONFIG,
+    ROUTE_GROUP1_CONFIG,
+    METER_POLICY_V4_CONFIG,
+    PE_VNET_MAPPING_CONFIG,
+    PE_SUBNET_ROUTE_CONFIG,
+    VM_SUBNET_ROUTE_CONFIG,
+    INBOUND_VNI_ROUTE_RULE_CONFIG,
+    METER_RULE1_V4_CONFIG,
+    METER_RULE2_V4_CONFIG,
+    ENI_CONFIG,
+    ENI_ROUTE_GROUP1_CONFIG,
 )
 
 logger = logging.getLogger(__name__)
@@ -294,57 +307,47 @@ def pl_traffic_config(duthosts, tbinfo):
 
 
 @pytest.fixture(scope="module")
-def setup_pl_config(duthosts, ptfhost, localhost, setup_ha_config):
+def setup_pl_config(duthosts, ptfhost, localhost, setup_ha_config, setup_gnmi_server):
     """
-    Push PrivateLink DASH tables to DPU0 on both DUTs via gnmi.
+    Push PrivateLink DASH tables to DPU0 on both DUTs via gNMI.
 
-    Uses PL_CONFIG_TABLES from tests/ha/configs/privatelink_config.py,
-    following the pattern established in PR #22161.
-
-    Yields after config is applied; cleans up on teardown.
+    Follows the pattern from test_ha_steady_state_pl.py (PR #22161):
+    applies config in ordered batches using apply_messages(), and tears
+    down with config_reload() on each DUT.
     """
-    pl_config = {}
-    for table in PL_CONFIG_TABLES:
-        pl_config.update(table)
-
-    tmp_file = "/tmp/ha_pl_config.json"
+    base_config = {
+        **APPLIANCE_CONFIG,
+        **ROUTING_TYPE_PL_CONFIG,
+        **ROUTING_TYPE_VNET_CONFIG,
+        **VNET_CONFIG,
+        **ROUTE_GROUP1_CONFIG,
+        **METER_POLICY_V4_CONFIG,
+    }
+    route_and_mapping = {
+        **PE_VNET_MAPPING_CONFIG,
+        **PE_SUBNET_ROUTE_CONFIG,
+        **VM_SUBNET_ROUTE_CONFIG,
+        **INBOUND_VNI_ROUTE_RULE_CONFIG,
+    }
+    meter_rules = {
+        **METER_RULE1_V4_CONFIG,
+        **METER_RULE2_V4_CONFIG,
+    }
 
     for duthost in duthosts:
         logger.info(f"Pushing PL config to {duthost.hostname} DPU0")
-        duthost.copy(
-            content=json.dumps(pl_config, indent=4),
-            dest=tmp_file
-        )
-        apply_messages(
-            localhost=localhost,
-            duthost=duthost,
-            ptfhost=ptfhost,
-            messages=pl_config,
-            dpu_index=0,
-            setup_ha_config=setup_ha_config,
-            gnmi_key="DASH_APPLIANCE_TABLE",
-            filename=tmp_file,
-            set_db=True,
-            wait_after_apply=5,
-        )
+        apply_messages(localhost, duthost, ptfhost, base_config, 0)
+        apply_messages(localhost, duthost, ptfhost, route_and_mapping, 0)
+        apply_messages(localhost, duthost, ptfhost, meter_rules, 0)
+        apply_messages(localhost, duthost, ptfhost, ENI_CONFIG, 0)
+        apply_messages(localhost, duthost, ptfhost, ENI_ROUTE_GROUP1_CONFIG, 0)
         logger.info(f"PL config applied on {duthost.hostname}")
 
     yield
 
-    # Teardown: remove PL config from both DUTs
     for duthost in duthosts:
-        logger.info(f"Removing PL config from {duthost.hostname} DPU0")
-        apply_messages(
-            localhost=localhost,
-            duthost=duthost,
-            ptfhost=ptfhost,
-            messages=pl_config,
-            dpu_index=0,
-            setup_ha_config=setup_ha_config,
-            gnmi_key="DASH_APPLIANCE_TABLE",
-            filename=tmp_file,
-            set_db=False,
-        )
+        logger.info(f"Reloading config on {duthost.hostname} to clean up PL config")
+        config_reload(duthost, safe_reload=False, yang_validate=False)
 
 
 ###############################################################################
