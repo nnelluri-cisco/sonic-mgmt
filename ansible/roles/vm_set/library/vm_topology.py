@@ -1317,13 +1317,18 @@ class VMTopology(object):
                                 (br_name, proto, vm_iface_id, ha_port, dut_iface_id))
                     bind_helper("ovs-ofctl add-flow %s table=0,priority=10,%s,in_port=%s,tp_src=%d,action=output:%s" %
                                 (br_name, proto, vm_iface_id, ha_port, dut_iface_id))
-            # Add flow for multihop BFD Control packets (UDP port 4784)
-            if self.topo.get("enable_bfd_multihop_ports", False):
-                bind_helper(
-                    "ovs-ofctl add-flow %s table=0,priority=10,udp,in_port=%s,tp_dst=4784,"
-                    "action=output:%s,%s" %
-                    (br_name, dut_iface_id, vm_iface_id, injected_iface_id)
-                )
+            # Add flow for BFD multihop packets (UDP dst port 4784).
+            bind_helper(
+                "ovs-ofctl add-flow %s table=0,priority=6,udp,in_port=%s,tp_dst=4784,"
+                "action=output:%s,%s" %
+                (br_name, dut_iface_id, vm_iface_id, injected_iface_id)
+            )
+            # Add flow for HA UDP packets (UDP dst port 65330).
+            bind_helper(
+                "ovs-ofctl add-flow %s table=0,priority=10,udp,in_port=%s,tp_dst=65330,"
+                "action=output:%s,%s" %
+                (br_name, dut_iface_id, vm_iface_id, injected_iface_id)
+            )
         # Add flow for BFD Control packets (UDP port 3784)
             bind_helper("ovs-ofctl add-flow %s table=0,priority=10,udp,in_port=%s,"
                         "udp_dst=3784,action=output:%s,%s" %

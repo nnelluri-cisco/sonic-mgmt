@@ -1,6 +1,5 @@
 topology:
   dut_num: 2
-  enable_bfd_multihop_ports: true
   VMs:
     ARISTA01T2:
       vlans:
