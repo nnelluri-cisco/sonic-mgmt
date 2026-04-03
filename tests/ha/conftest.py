@@ -24,7 +24,7 @@ from constants import LOCAL_CA_IP, \
     NPU_DATAPLANE_IP, NPU_DATAPLANE_MAC, NPU_DATAPLANE_PORT, DPU_DATAPLANE_IP, DPU_DATAPLANE_MAC, DPU_DATAPLANE_PORT
 from tests.common.dash_utils import render_template_to_host, apply_swssconfig_file
 from tests.common.helpers.smartswitch_util import correlate_dpu_info_with_dpuhost, get_data_port_on_dpu, get_dpu_dataplane_port # noqa F401
-from tests.ha.gnmi_utils import generate_gnmi_cert, apply_gnmi_cert, recover_gnmi_cert, apply_gnmi_file
+from tests.ha.gnmi_utils import generate_gnmi_cert, apply_gnmi_cert, recover_gnmi_cert, apply_gnmi_file, apply_messages
 from tests.ha.ha_gnmi import apply_ha_messages, ha_scope_config, ha_set_config
 from tests.common import config_reload
 import configs.privatelink_config as pl
@@ -477,6 +477,191 @@ def setup_npu_dpu(dpu_setup, add_npu_static_routes):
 
 
 ###############################################################################
+# LOCAL DPU GENERATOR (DUT01 & DUT02)
+###############################################################################
+
+def generate_local_dpu_config(
+    switch_id: int,
+    hostname: str,
+    dpu_count=8,
+    swbus_start=23606
+):
+    """
+    switch_id:
+        0 FOR DUT01, pa_ipv4 = 20.0.200.x
+        1 FOR DUT02, pa_ipv4 = 20.0.201.x
+
+    DPU keys align with DPU hostnames: {hostname}-dpu-{idx}
+    """
+    pa_prefix = f"20.0.20{switch_id}."
+    vip_prefix = "3.2.1."
+    midplane_prefix = "169.254.200."
+
+    dpu = {}
+    for idx in range(dpu_count):
+        dpu_key = f"{hostname}-dpu-{idx}"
+        dpu[dpu_key] = {
+            "dpu_id": str(idx),
+            "gnmi_port": "50051",
+            "local_port": "8080",
+            "orchagent_zmq_port": "8100",
+            "pa_ipv4": f"{pa_prefix}{idx + 1}",
+            "state": "up",
+            "swbus_port": str(swbus_start + idx),
+            "vdpu_id": f"vdpu{switch_id}_{idx}",
+            "vip_ipv4": f"{vip_prefix}{idx}",
+            "midplane_ipv4": f"{midplane_prefix}{idx + 1}",
+        }
+
+    return dpu
+
+
+def generate_vdpu_config(hostname_0: str, hostname_1: str, dpu_count=8):
+    """
+    Generate VDPU table for BOTH clusters.
+    main_dpu_ids maps to DPU table keys ({hostname}-dpu-{idx}).
+    """
+    vdpu = {}
+
+    for idx in range(dpu_count):
+        vdpu[f"vdpu0_{idx}"] = {"main_dpu_ids": f"{hostname_0}-dpu-{idx}"}
+
+    for idx in range(dpu_count):
+        vdpu[f"vdpu1_{idx}"] = {"main_dpu_ids": f"{hostname_1}-dpu-{idx}"}
+
+    return vdpu
+
+
+###############################################################################
+# REMOTE DPU GENERATOR (UNIFIED)
+###############################################################################
+
+def generate_remote_dpu_config_for_dut(
+    switch_id: int,
+    peer_hostname: str,
+    tbinfo,
+    dpu_count=8,
+    swbus_start=23606
+):
+    """
+    Both DUT01 and DUT02 belong to the same cluster.
+    Remote DPU keys align with peer DPU hostnames: {peer_hostname}-dpu-{idx}
+    """
+
+    remote_switch_id = 1 - switch_id
+
+    topo_dut = tbinfo["topo"]["properties"]["topology"]["DUT"]
+    remote_loopback = topo_dut["loopback"]["ipv4"][remote_switch_id]
+    remote_npu_ip = remote_loopback.split("/")[0]
+    pa_prefix = f"20.0.20{remote_switch_id}."
+
+    remote = {}
+    for idx in range(dpu_count):
+        dpu_key = f"{peer_hostname}-dpu-{idx}"
+        remote[dpu_key] = {
+            "dpu_id": str(idx),
+            "npu_ipv4": remote_npu_ip,
+            "pa_ipv4": f"{pa_prefix}{idx + 1}",
+            "swbus_port": str(swbus_start + idx),
+            "type": "cluster"
+        }
+    return remote
+
+
+###############################################################################
+# UNIFIED FULL CONFIG GENERATOR (DUT01 + DUT02)
+###############################################################################
+
+def generate_ha_config_for_dut(switch_id: int, duthost, peer_duthost, tbinfo):
+    """
+    switch_id 0 FOR  DUT01
+    switch_id 1 FOR  DUT02
+
+    duthost:      the DUT host object for this switch.
+    peer_duthost: the peer DUT host object (other switch in the HA pair).
+    tbinfo:       testbed info, used to retrieve loopback IPs from topology.
+    """
+
+    hostname = duthost.hostname
+    peer_hostname = peer_duthost.hostname
+
+    hostname_0 = hostname if switch_id == 0 else peer_hostname
+    hostname_1 = peer_hostname if switch_id == 0 else hostname
+
+    topo_dut = tbinfo["topo"]["properties"]["topology"]["DUT"]
+    loopback_ip = topo_dut["loopback"]["ipv4"][switch_id]
+    loopback_v6 = topo_dut["loopback"]["ipv6"][switch_id]
+
+    vxlan_src_ip = loopback_ip.split("/")[0]
+    return {
+        "DPU": generate_local_dpu_config(switch_id, hostname),
+        "REMOTE_DPU": generate_remote_dpu_config_for_dut(switch_id, peer_hostname, tbinfo),
+        "VDPU": generate_vdpu_config(hostname_0, hostname_1),
+        "DASH_HA_GLOBAL_CONFIG": {
+            "global": {
+                "dpu_bfd_probe_interval_in_ms": "1000",
+                "dpu_bfd_probe_multiplier": "3",
+                "cp_data_channel_port": "11362",
+                "dp_channel_dst_port": "11368",
+                "dp_channel_src_port_min": "7001",
+                "dp_channel_src_port_max": "7010",
+                "dp_channel_probe_interval_ms": "500",
+                "dpu_vnet": "Vnet_55",
+                "dpu_vlan": "Vlan55",
+                "dp_channel_probe_fail_threshold": "5"
+            }
+        },
+
+        "LOOPBACK_INTERFACE": {
+            "Loopback0": {},
+            f"Loopback0|{loopback_ip}": {},
+            f"Loopback0|{loopback_v6}": {}
+        },
+
+        "FEATURE": {
+            "dash-ha": {
+                "auto_restart": "disabled",
+                "delayed": "False",
+                "has_global_scope": "False",
+                "has_per_asic_scope": "False",
+                "has_per_dpu_scope": "True",
+                "high_mem_alert": "disabled",
+                "state": "enabled",
+                "support_syslog_rate_limit": "true"
+            }
+        },
+
+        "VNET": {
+            "Vnet_55": {
+                "scope": "default",
+                "vni": "10000",
+                "vxlan_tunnel": "t4"
+            }
+        },
+
+        "VXLAN_TUNNEL": {
+            "t4": {"src_ip": vxlan_src_ip}
+        }
+    }
+
+
+def remove_loopback_ips(dut):
+    out_v4 = dut.shell("show ip interfaces | grep Loopback0 || true")["stdout"].strip().splitlines()
+    for line in out_v4:
+        parts = line.split()
+        if len(parts) >= 2:
+            ip = parts[1]
+            dut.shell(f"sudo config interface ip remove Loopback0 {ip} || true")
+
+    out_v6 = dut.shell("show ipv6 interfaces | grep Loopback0 || true")["stdout"].strip().splitlines()
+    for line in out_v6:
+        parts = line.split()
+        if len(parts) >= 2:
+            ip = parts[1]
+            dut.shell(f"sudo config interface ip remove Loopback0 {ip} || true")
+
+
+###############################################################################
 # PYTEST FIXTURE — APPLY CONFIG ON BOTH DUTS
 ###############################################################################
 
@@ -648,11 +833,13 @@ def activate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_ser
                 messages=ha_scope_messages,
             )
         for idx, (duthost, (key, fields)) in enumerate(zip(duthosts, activate_scope_per_dut)):
+            # Wait up to 300s — after a process-crash test the HA state machine
+            # may need significant time to re-enter the activate_role flow.
             pending_id = wait_for_pending_operation_id(
                 duthost,
                 scope_key=key,
                 expected_op_type="activate_role",
-                timeout=120,
+                timeout=300,
                 interval=2
             )
             assert pending_id, (
@@ -726,3 +913,58 @@ def activate_dash_ha_from_json(duthosts, localhost, ptfhost, setup_gnmi_server, 
     activate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_server, ha_owner)
     yield
     deactivate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_server, ha_owner)
+
+
+@pytest.fixture(scope="module")
+def setup_dash_pl_pipeline(
+    localhost, duthosts, ptfhost, dpu_index, skip_config,
+    dpuhosts, setup_npu_dpu, set_vxlan_udp_sport_range
+):
+    """
+    Apply DASH Private Link pipeline config (appliance, routing type, VNET,
+    ENI, routes, meters) on all DPUs. Required by any test that sends PL
+    traffic and does not already pull in the steady-state common_setup_teardown.
+    """
+    if skip_config:
+        yield
+        return
+
+    for i in range(len(duthosts)):
+        duthost = duthosts[i]
+        dpuhost = dpuhosts[i]
+
+        base_config_messages = {
+            **pl.APPLIANCE_CONFIG,
+            **pl.ROUTING_TYPE_PL_CONFIG,
+            **pl.VNET_CONFIG,
+            **pl.ROUTE_GROUP1_CONFIG,
+            **pl.METER_POLICY_V4_CONFIG,
+        }
+        logger.info(
+            f"setup_dash_pl_pipeline: applying base config on "
+            f"{duthost.hostname} dpu {dpuhost.dpu_index}"
+        )
+        apply_messages(localhost, duthost, ptfhost, base_config_messages, dpuhost.dpu_index)
+
+        route_and_mapping_messages = {
+            **pl.PE_VNET_MAPPING_CONFIG,
+            **pl.PE_SUBNET_ROUTE_CONFIG,
+            **pl.VM_SUBNET_ROUTE_CONFIG,
+        }
+        if "bluefield" in dpuhost.facts["asic_type"]:
+            route_and_mapping_messages.update({**pl.INBOUND_VNI_ROUTE_RULE_CONFIG})
+        apply_messages(localhost, duthost, ptfhost, route_and_mapping_messages, dpuhost.dpu_index)
+
+        meter_rule_messages = {
+            **pl.METER_RULE1_V4_CONFIG,
+            **pl.METER_RULE2_V4_CONFIG,
+        }
+        apply_messages(localhost, duthost, ptfhost, meter_rule_messages, dpuhost.dpu_index)
+
+        apply_messages(localhost, duthost, ptfhost, pl.ENI_CONFIG, dpuhost.dpu_index)
+        apply_messages(localhost, duthost, ptfhost, pl.ENI_ROUTE_GROUP1_CONFIG, dpuhost.dpu_index)
+
+    yield
+
+    for dpuhost in dpuhosts:
+        config_reload(dpuhost, safe_reload=False, yang_validate=False)
