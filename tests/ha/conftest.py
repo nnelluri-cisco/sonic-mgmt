@@ -25,7 +25,7 @@ from constants import LOCAL_CA_IP, \
     NPU_DATAPLANE_IP, NPU_DATAPLANE_MAC, NPU_DATAPLANE_PORT, DPU_DATAPLANE_IP, DPU_DATAPLANE_MAC, DPU_DATAPLANE_PORT
 from tests.common.dash_utils import render_template_to_host, apply_swssconfig_file
 from tests.common.helpers.smartswitch_util import correlate_dpu_info_with_dpuhost, get_data_port_on_dpu, get_dpu_dataplane_port # noqa F401
-from tests.ha.gnmi_utils import generate_gnmi_cert, apply_gnmi_cert, recover_gnmi_cert, apply_gnmi_file
+from tests.ha.gnmi_utils import generate_gnmi_cert, apply_gnmi_cert, recover_gnmi_cert, apply_gnmi_file, apply_messages
 from tests.ha.ha_gnmi import apply_ha_messages, ha_scope_config, ha_set_config
 from tests.common import config_reload
 import configs.privatelink_config as pl
@@ -594,7 +594,6 @@ def generate_ha_config_for_dut(switch_id: int, duthost, peer_duthost, tbinfo):
     loopback_v6 = topo_dut["loopback"]["ipv6"][switch_id]
 
     vxlan_src_ip = loopback_ip.split("/")[0]
-
     return {
         "DPU": generate_local_dpu_config(switch_id, hostname),
         "REMOTE_DPU": generate_remote_dpu_config_for_dut(switch_id, peer_hostname, tbinfo),
@@ -867,11 +866,13 @@ def activate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_ser
                 messages=ha_scope_messages,
             )
         for idx, (duthost, (key, fields)) in enumerate(zip(duthosts, activate_scope_per_dut)):
+            # Wait up to 300s — after a process-crash test the HA state machine
+            # may need significant time to re-enter the activate_role flow.
             pending_id = wait_for_pending_operation_id(
                 duthost,
                 scope_key=key,
                 expected_op_type="activate_role",
-                timeout=120,
+                timeout=300,
                 interval=2
             )
             assert pending_id, (
@@ -893,7 +894,9 @@ def activate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_ser
                 ptfhost=ptfhost,
                 messages=ha_scope_messages,
             )
-            # Verify HA state using fields
+            # Both DUTs report "active" in local_acked_asic_ha_state because
+            # the DPU HA dataplane operates in active/active mode. The
+            # active/standby distinction is a control-plane concept only.
             expected_state = "active"
             assert verify_ha_state(
                 duthost,
@@ -938,3 +941,58 @@ def activate_dash_ha_from_json(duthosts, localhost, ptfhost, setup_gnmi_server, 
     activate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_server, ha_owner)
     yield
     deactivate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_server, ha_owner)
+
+
+@pytest.fixture(scope="module")
+def setup_dash_pl_pipeline(
+    localhost, duthosts, ptfhost, dpu_index, skip_config,
+    dpuhosts, setup_npu_dpu, set_vxlan_udp_sport_range
+):
+    """
+    Apply DASH Private Link pipeline config (appliance, routing type, VNET,
+    ENI, routes, meters) on all DPUs. Required by any test that sends PL
+    traffic and does not already pull in the steady-state common_setup_teardown.
+    """
+    if skip_config:
+        yield
+        return
+
+    for i in range(len(duthosts)):
+        duthost = duthosts[i]
+        dpuhost = dpuhosts[i]
+
+        base_config_messages = {
+            **pl.APPLIANCE_CONFIG,
+            **pl.ROUTING_TYPE_PL_CONFIG,
+            **pl.VNET_CONFIG,
+            **pl.ROUTE_GROUP1_CONFIG,
+            **pl.METER_POLICY_V4_CONFIG,
+        }
+        logger.info(
+            f"setup_dash_pl_pipeline: applying base config on "
+            f"{duthost.hostname} dpu {dpuhost.dpu_index}"
+        )
+        apply_messages(localhost, duthost, ptfhost, base_config_messages, dpuhost.dpu_index)
+
+        route_and_mapping_messages = {
+            **pl.PE_VNET_MAPPING_CONFIG,
+            **pl.PE_SUBNET_ROUTE_CONFIG,
+            **pl.VM_SUBNET_ROUTE_CONFIG,
+        }
+        if "bluefield" in dpuhost.facts["asic_type"]:
+            route_and_mapping_messages.update({**pl.INBOUND_VNI_ROUTE_RULE_CONFIG})
+        apply_messages(localhost, duthost, ptfhost, route_and_mapping_messages, dpuhost.dpu_index)
+
+        meter_rule_messages = {
+            **pl.METER_RULE1_V4_CONFIG,
+            **pl.METER_RULE2_V4_CONFIG,
+        }
+        apply_messages(localhost, duthost, ptfhost, meter_rule_messages, dpuhost.dpu_index)
+
+        apply_messages(localhost, duthost, ptfhost, pl.ENI_CONFIG, dpuhost.dpu_index)
+        apply_messages(localhost, duthost, ptfhost, pl.ENI_ROUTE_GROUP1_CONFIG, dpuhost.dpu_index)
+
+    yield
+
+    for dpuhost in dpuhosts:
+        config_reload(dpuhost, safe_reload=False, yang_validate=False)
