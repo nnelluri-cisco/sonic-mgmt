@@ -218,8 +218,9 @@ class TestDpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, active_dpuhost,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, activate_dash_ha_from_json,
+        setup_gnmi_server,
         ptfadapter, dash_pl_config,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
@@ -238,8 +239,9 @@ class TestDpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, active_dpuhost,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, activate_dash_ha_from_json,
+        setup_gnmi_server,
         ptfadapter, dash_pl_config,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
@@ -258,8 +260,9 @@ class TestDpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, standby_dpuhost,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, activate_dash_ha_from_json,
+        setup_gnmi_server,
         ptfadapter, dash_pl_config,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
@@ -278,8 +281,9 @@ class TestDpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, standby_dpuhost,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, activate_dash_ha_from_json,
+        setup_gnmi_server,
         ptfadapter, dash_pl_config,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,

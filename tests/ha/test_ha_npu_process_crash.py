@@ -456,9 +456,10 @@ class TestNpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, setup_dash_pl_pipeline, activate_dash_ha_from_json,
+        setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         localhost, ptfhost,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
@@ -478,9 +479,10 @@ class TestNpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, setup_dash_pl_pipeline, activate_dash_ha_from_json,
+        setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         localhost, ptfhost,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
@@ -500,9 +502,10 @@ class TestNpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, setup_dash_pl_pipeline, activate_dash_ha_from_json,
+        setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         localhost, ptfhost,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
@@ -522,9 +525,10 @@ class TestNpuProcessCrash:
         self, process_name, container,
         active_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
-        setup_gnmi_server, setup_dash_pl_pipeline, activate_dash_ha_from_json,
+        setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         localhost, ptfhost,
+        activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,

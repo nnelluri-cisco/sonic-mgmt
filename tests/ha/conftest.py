@@ -993,6 +993,3 @@ def setup_dash_pl_pipeline(
         apply_messages(localhost, duthost, ptfhost, pl.ENI_ROUTE_GROUP1_CONFIG, dpuhost.dpu_index)
 
     yield
-
-    for dpuhost in dpuhosts:
-        config_reload(dpuhost, safe_reload=False, yang_validate=False)
