@@ -5,9 +5,9 @@ Verifies HA behavior when critical processes crash on DPUs in the
 t1-smartswitch-ha topology.
 
 For each DPU process under test (syncd, bgp) there are 4 variations:
-    1. Crash on active DPU,  traffic landing on active DPU
-    2. Crash on active DPU,  traffic landing on standby DPU
-    3. Crash on standby DPU, traffic landing on active DPU
+    1. Crash on primary DPU,  traffic landing on primary DPU
+    2. Crash on primary DPU,  traffic landing on standby DPU
+    3. Crash on standby DPU, traffic landing on primary DPU
     4. Crash on standby DPU, traffic landing on standby DPU
 
 Expected Control Plane : HA state converges eventually.
@@ -125,7 +125,7 @@ def send_continuous_pl_traffic(ptfadapter, send_config, recv_ports,
 
 
 @pytest.fixture(scope="module")
-def active_dut(duthosts):
+def primary_dut(duthosts):
     return duthosts[0]
 
 
@@ -135,7 +135,7 @@ def standby_dut(duthosts):
 
 
 @pytest.fixture(scope="module")
-def active_dpuhost(dpuhosts):
+def primary_dpuhost(dpuhosts):
     return dpuhosts[0]
 
 
@@ -216,14 +216,14 @@ class TestDpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", DPU_CRITICAL_PROCESSES)
     def test_crash_active_dpu_traffic_on_active(
         self, process_name, container,
-        active_dut, standby_dut, active_dpuhost,
+        primary_dut, standby_dut, primary_dpuhost,
         setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
-            crash_dpuhost=active_dpuhost, crash_duthost=active_dut,
+            crash_dpuhost=primary_dpuhost, crash_duthost=primary_dut,
             crash_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_after_crash="active",
             verify_duthost=standby_dut,
@@ -236,14 +236,14 @@ class TestDpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", DPU_CRITICAL_PROCESSES)
     def test_crash_active_dpu_traffic_on_standby(
         self, process_name, container,
-        active_dut, standby_dut, active_dpuhost,
+        primary_dut, standby_dut, primary_dpuhost,
         setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
     ):
         self._run(
             process_name=process_name, container=container,
-            crash_dpuhost=active_dpuhost, crash_duthost=active_dut,
+            crash_dpuhost=primary_dpuhost, crash_duthost=primary_dut,
             crash_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_after_crash="active",
             verify_duthost=standby_dut,
@@ -256,7 +256,7 @@ class TestDpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", DPU_CRITICAL_PROCESSES)
     def test_crash_standby_dpu_traffic_on_active(
         self, process_name, container,
-        active_dut, standby_dut, standby_dpuhost,
+        primary_dut, standby_dut, standby_dpuhost,
         setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
@@ -266,7 +266,7 @@ class TestDpuProcessCrash:
             crash_dpuhost=standby_dpuhost, crash_duthost=standby_dut,
             crash_scope_key=STANDBY_SCOPE_KEY,
             expected_ha_state_after_crash="active",
-            verify_duthost=active_dut,
+            verify_duthost=primary_dut,
             verify_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_verify="active",
             ptfadapter=ptfadapter, dash_pl_config=dash_pl_config,
@@ -276,7 +276,7 @@ class TestDpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", DPU_CRITICAL_PROCESSES)
     def test_crash_standby_dpu_traffic_on_standby(
         self, process_name, container,
-        active_dut, standby_dut, standby_dpuhost,
+        primary_dut, standby_dut, standby_dpuhost,
         setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
@@ -286,7 +286,7 @@ class TestDpuProcessCrash:
             crash_dpuhost=standby_dpuhost, crash_duthost=standby_dut,
             crash_scope_key=STANDBY_SCOPE_KEY,
             expected_ha_state_after_crash="active",
-            verify_duthost=active_dut,
+            verify_duthost=primary_dut,
             verify_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_verify="active",
             ptfadapter=ptfadapter, dash_pl_config=dash_pl_config,
