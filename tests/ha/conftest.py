@@ -915,7 +915,7 @@ def activate_dash_ha_from_json(duthosts, localhost, ptfhost, setup_gnmi_server, 
     deactivate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_server, ha_owner)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def setup_dash_pl_pipeline(
     localhost, duthosts, ptfhost, dpu_index, skip_config,
     dpuhosts, setup_npu_dpu, set_vxlan_udp_sport_range

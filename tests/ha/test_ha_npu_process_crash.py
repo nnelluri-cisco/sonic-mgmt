@@ -5,9 +5,9 @@ Verifies HA behavior when critical processes crash on the NPU in the
 t1-smartswitch-ha topology.
 
 For each NPU process under test (hamgrd, pmon, bgp) there are 4 variations:
-    1. Crash on active NPU,  traffic landing on active DUT
-    2. Crash on active NPU,  traffic landing on standby DUT
-    3. Crash on standby NPU, traffic landing on active DUT
+    1. Crash on primary NPU,  traffic landing on primary DUT
+    2. Crash on primary NPU,  traffic landing on standby DUT
+    3. Crash on standby NPU, traffic landing on primary DUT
     4. Crash on standby NPU, traffic landing on standby DUT
 
 Expected Control Plane : HA state converges eventually.
@@ -195,7 +195,7 @@ def send_continuous_pl_traffic(ptfadapter, send_config, recv_ports,
 
 
 @pytest.fixture(scope="module")
-def active_dut(duthosts):
+def primary_dut(duthosts):
     return duthosts[0]
 
 
@@ -455,7 +455,7 @@ class TestNpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", NPU_CRITICAL_PROCESSES)
     def test_crash_active_npu_traffic_on_active(
         self, process_name, container,
-        active_dut, standby_dut, duthosts,
+        primary_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
         setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
@@ -464,7 +464,7 @@ class TestNpuProcessCrash:
     ):
         self._run(
             process_name=process_name, container=container,
-            crash_duthost=active_dut,
+            crash_duthost=primary_dut,
             crash_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_after_crash="active",
             verify_duthost=standby_dut,
@@ -478,7 +478,7 @@ class TestNpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", NPU_CRITICAL_PROCESSES)
     def test_crash_active_npu_traffic_on_standby(
         self, process_name, container,
-        active_dut, standby_dut, duthosts,
+        primary_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
         setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
@@ -487,7 +487,7 @@ class TestNpuProcessCrash:
     ):
         self._run(
             process_name=process_name, container=container,
-            crash_duthost=active_dut,
+            crash_duthost=primary_dut,
             crash_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_after_crash="active",
             verify_duthost=standby_dut,
@@ -501,7 +501,7 @@ class TestNpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", NPU_CRITICAL_PROCESSES)
     def test_crash_standby_npu_traffic_on_active(
         self, process_name, container,
-        active_dut, standby_dut, duthosts,
+        primary_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
         setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
@@ -513,7 +513,7 @@ class TestNpuProcessCrash:
             crash_duthost=standby_dut,
             crash_scope_key=STANDBY_SCOPE_KEY,
             expected_ha_state_after_crash="active",
-            verify_duthost=active_dut,
+            verify_duthost=primary_dut,
             verify_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_verify="active",
             ptfadapter=ptfadapter, dash_pl_config=dash_pl_config,
@@ -524,7 +524,7 @@ class TestNpuProcessCrash:
     @pytest.mark.parametrize("process_name,container", NPU_CRITICAL_PROCESSES)
     def test_crash_standby_npu_traffic_on_standby(
         self, process_name, container,
-        active_dut, standby_dut, duthosts,
+        primary_dut, standby_dut, duthosts,
         setup_ha_config, setup_dash_ha_from_json,
         setup_gnmi_server, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
@@ -536,7 +536,7 @@ class TestNpuProcessCrash:
             crash_duthost=standby_dut,
             crash_scope_key=STANDBY_SCOPE_KEY,
             expected_ha_state_after_crash="active",
-            verify_duthost=active_dut,
+            verify_duthost=primary_dut,
             verify_scope_key=ACTIVE_SCOPE_KEY,
             expected_ha_state_verify="active",
             ptfadapter=ptfadapter, dash_pl_config=dash_pl_config,
