@@ -27,7 +27,7 @@ import pytest
 from constants import LOCAL_PTF_INTF, REMOTE_PTF_RECV_INTF
 from packets import outbound_pl_packets
 from tests.common.utilities import wait_until, InterruptableThread
-from tests.ha.ha_utils import wait_for_ha_state
+from tests.ha.ha_utils import verify_ha_state
 from tests.ha.ha_gnmi import apply_ha_messages, ha_scope_config
 
 logger = logging.getLogger(__name__)
@@ -143,7 +143,7 @@ def ensure_dpu0_online(duthosts):
 
 def verify_ha_state_converged(duthost, scope_key, expected_state,
                               timeout=HA_CONVERGENCE_TIMEOUT):
-    assert wait_for_ha_state(
+    assert verify_ha_state(
         duthost,
         scope_key=scope_key,
         expected_state=expected_state,
