@@ -185,6 +185,7 @@ def send_continuous_pl_traffic(ptfadapter, send_config, recv_ports,
                 )
                 received += 1
             except AssertionError:
+                # Packet not received; counted as loss for traffic stats
                 pass
         except Exception as e:
             logger.debug(f"Traffic sender: {e}")
