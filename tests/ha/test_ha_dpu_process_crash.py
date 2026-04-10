@@ -218,7 +218,7 @@ class TestDpuProcessCrash:
     def test_crash_active_dpu_traffic_on_active(
         self, process_name, container,
         primary_dut, standby_dut, primary_dpuhost,
-        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
+        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json_func_scope, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
     ):
@@ -238,7 +238,7 @@ class TestDpuProcessCrash:
     def test_crash_active_dpu_traffic_on_standby(
         self, process_name, container,
         primary_dut, standby_dut, primary_dpuhost,
-        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
+        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json_func_scope, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
     ):
@@ -258,7 +258,7 @@ class TestDpuProcessCrash:
     def test_crash_standby_dpu_traffic_on_active(
         self, process_name, container,
         primary_dut, standby_dut, standby_dpuhost,
-        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
+        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json_func_scope, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
     ):
@@ -278,7 +278,7 @@ class TestDpuProcessCrash:
     def test_crash_standby_dpu_traffic_on_standby(
         self, process_name, container,
         primary_dut, standby_dut, standby_dpuhost,
-        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json, setup_dash_pl_pipeline,
+        setup_ha_config, setup_gnmi_server, setup_dash_ha_from_json_func_scope, setup_dash_pl_pipeline,
         ptfadapter, dash_pl_config,
         activate_dash_ha_from_json,
     ):

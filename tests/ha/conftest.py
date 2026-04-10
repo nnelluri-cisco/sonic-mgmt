@@ -892,21 +892,6 @@ def deactivate_dash_ha_from_json_util(duthosts, localhost, ptfhost, setup_gnmi_s
     for index, duthost in enumerate(duthosts):
         set_dead_dash_ha_scope(localhost, duthost, ptfhost, f"vdpu{index}_0:haset0_0")
 
-    for duthost, (key, fields) in zip(duthosts, activate_scope_per_dut):
-        vdpu_id, ha_set_id = key.split(":", 1)
-        ha_scope_messages = ha_scope_config(
-            vdpu_id=vdpu_id,
-            ha_set_id=ha_set_id,
-            **fields,
-        )
-        apply_ha_messages(
-            localhost=localhost,
-            duthost=duthost,
-            ptfhost=ptfhost,
-            messages=ha_scope_messages,
-            set_db=False
-        )
-
 
 @pytest.fixture(scope="function")
 def activate_dash_ha_from_json(duthosts, localhost, ptfhost, setup_gnmi_server, ha_owner):
@@ -965,3 +950,7 @@ def setup_dash_pl_pipeline(
         apply_messages(localhost, duthost, ptfhost, pl.ENI_ROUTE_GROUP1_CONFIG, dpuhost.dpu_index)
 
     yield
+
+    logger.info("setup_dash_pl_pipeline: cleanup.")
+    for dpuhost in dpuhosts:
+        config_reload(dpuhost, safe_reload=True, yang_validate=False)
